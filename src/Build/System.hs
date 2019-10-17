@@ -9,7 +9,7 @@ module Build.System (
     make, ninja, cloudBuild, buck,
 
     -- * Monadic build systems
-    excel, shake, cloudShake, bazel, nix
+    excel, shake, cloudShake, bazel, nix, forward
     ) where
 
 import Control.Monad.State
@@ -65,6 +65,11 @@ excel = restarting dirtyBitRebuilder
 -- check if a key is up to date.
 shake :: (Ord k, Hashable v) => Build Monad (VT k v) k v
 shake = suspending vtRebuilder
+
+-- | A model of a generic forward build system:
+-- 
+forward :: (Ord k, Hashable v, Ord d, Hashable v2) => (d -> m v2) -> Build (MonadState (VT2 k v d v2)) (VT2 k v d v2) k v
+forward getDep = topological2 (svtRebuilder getDep)
 
 -- | A model of Bazel: a monadic build system that uses constructive traces
 -- to check if a key is up to date as well as for caching build results. Note

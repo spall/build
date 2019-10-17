@@ -4,7 +4,8 @@ module Build (
     Build,
 
     -- * Properties
-    correctBuild
+    correctBuild,
+    correctBuildS
     ) where
 
 import Build.Task
@@ -30,3 +31,6 @@ correctBuild tasks store result = all correct . reachable deps
     correct k = case tasks k of
         Nothing   -> getValue k result == getValue k store
         Just task -> getValue k result == compute task result
+
+correctBuildS :: (Ord k, Eq v) => Tasks (MonadState i) k v -> Store i k v -> Store i k v -> k -> Bool
+correctBuildS tasks store result = True

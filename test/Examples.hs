@@ -79,7 +79,7 @@ cloudAckermann (m, n)
                           value <- fetch (m - 1, index)
                           modify (Map.insert (m, n) value)
                           return value
-            Just value -> return value
+          Just value -> return value
 
 -- Unlike Collatz and Fibonacci computations, the Ackermann computation cannot
 -- be statically analysed for dependencies. We can only find the first dependency
@@ -143,8 +143,51 @@ editDistance (C i j) = Just $ Task $ \fetch -> do
     if ai == bj
         then fetch (C (i - 1) (j - 1))
         else do
-            insert  <- fetch (C  i      (j - 1))
+d            insert  <- fetch (C  i      (j - 1))
             delete  <- fetch (C (i - 1)  j     )
             replace <- fetch (C (i - 1) (j - 1))
             return (1 + minimum [insert, delete, replace])
 editDistance _ = Nothing
+
+
+-------------------------- forward build example -------------------------------
+
+type Cmd = String
+type FilePath = String
+type FileContent = String
+
+getDeps :: Cmd -> [(FilePath, FileContent)]
+getDeps cmd = [("f1", "content")]
+
+runCmd :: Cmd -> State (VT2 Cmd () FilePath FileContent)
+runCmd cmd = do
+  putStrLn cmd -- replace with code which actually runs the cmd
+  let deps = getDeps cmd
+  ts <- get
+  put $ recordVT2 cmd () deps ts
+
+script1 :: Tasks (State (VT2 Cmd () FilePath FileContent)) Cmd ()
+script1 "echo \"hi,\"" = Just $ Task $ \f1 -> runCmd
+script1 "echo \"this\"" = Just $ Task $ \f1 -> do
+  f1 cmd1
+  runCmd cmd2
+script1 "echo \"is\"" = Just $ Task $ \f1 -> do
+  f1 cmd2
+  runCmd cmd3
+script1 "echo \"a\"" = Just $ Task $ \f1 -> do
+  f1 cmd3
+  runCmd cmd4
+script1 "echo \"forward\"" = Just $ Task $ \f1 -> do
+  f1 cmd4
+  runCmd cmd5
+script1 "echo \"build\"" = Just $ Task $ \f1 -> do
+  f1 cmd5
+  runCmd cmd6
+script1 _ = Nothing
+  where cmd1 = "echo \"hi,\""
+        cmd2 = "echo \"this\""
+        cmd3 = "echo \"is\""
+        cmd4 = "echo \"a\""
+        cmd5 = "echo \"forward\""
+        cmd6 = "echo \"build\""
+

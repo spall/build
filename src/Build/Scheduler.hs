@@ -25,6 +25,8 @@ import Build.Utilities
 
 import qualified Data.Set as Set
 
+-- type Rebuilder c i k v = k -> v -> Task c k v -> Task (MonadState i) k v
+-- type Build c i k v = Tasks c k v -> k -> Store i k v -> Store i k v
 type Scheduler c i j k v = Rebuilder c j k v -> Build c i k v
 
 -- | Lift a computation operating on @i@ to @Store i k v@.
@@ -73,6 +75,36 @@ topological rebuilder tasks target = execState $ mapM_ build order
         Nothing -> error "Cannot build tasks with cyclic dependencies"
         Just xs -> xs
     deps k = case tasks k of { Nothing -> []; Just task -> dependencies task }
+
+topological2 :: forall i k v. Ord k => Scheduler (MonadState i) i i k v
+topological2 rebuilder tasks target = execState $ mapM_ build order
+  where
+    build :: k -> State (Store i k v) ()
+    build key = case tasks key of
+        Nothing -> return ()
+        Just task -> do
+            store <- get
+            let value = getValue key store
+                newTask :: Task (MonadState i) k v
+                newTask = rebuilder key value task
+                fetch :: k -> State i v
+                fetch k = return (getValue k store)
+            newValue <- liftStore (run newTask fetch)
+            modify $ updateValue key value newValue
+    order = case topSort (graph deps target) of
+        Nothing -> error "Cannot build tasks with cyclic dependencies"
+        Just xs -> xs
+    deps k = case tasks k of { Nothing -> []; Just task -> dependencies task }
+
+-- topological calls build on each key in the determined order
+-- build
+-- 1. finds task for the key if there is one
+-- 2. gets the store
+-- 3. gets the current value from the store
+-- 4. uses the rebuilder to make a new task
+-- 5. the fetch function just looks the value up from the store.; because we have already run
+--    the task.
+-- 6. 
 
 ---------------------------------- Restarting ----------------------------------
 -- | Convert a task with a total lookup function @k -> m v@ into a task
@@ -215,3 +247,37 @@ independent rebuilder tasks target store = case tasks target of
             fetch k = return (getValue k store)
             (newValue, newInfo) = runState (run newTask fetch) (getInfo store)
         in putInfo newInfo $ updateValue target value newValue store
+
+---------------------------- sequential ------------------------------------------------
+
+{- -- | A build system takes a description of 'Tasks', a target key, and a store,
+-- and computes a new store, where the key and its dependencies are up to date.
+type Build c i k v = Tasks c k v -> k -> Store i k v -> Store i k v
+
+type Scheduler c i j k v = Rebuilder c j k v -> Build c i k v
+
+-- | Given a key-value pair and the corresponding task, a rebuilder returns a
+-- new task that has access to the build information and can use it to skip
+-- rebuilding a key if it is up to date.
+type Rebuilder c i k v = k -> v -> Task c k v -> Task (MonadState i) k v
+
+-- | A 'Task' is used to compute a value of type @v@, by finding the necessary
+-- dependencies using the provided @fetch :: k -> f v@ callback.
+newtype Task c k v = Task { run :: forall f. c f => (k -> f v) -> f v }
+
+-- | 'Tasks' associates a 'Task' with every non-input key. @Nothing@ indicates
+-- that the key is an input.
+type Tasks c k v = k -> Maybe (Task c k v)
+
+
+sequential :: forall i k v. Ord k => Scheduler Monad i i k v
+sequential rebuilder tasks target store 
+-}
+
+-- Tasks c Cmd ? -> Cmd -> Store (Map.HashMap FileName Hash) Cmd ? -> Store
+
+-- Rebuilder c ? Cmd ? -> Build c i k v
+
+
+
+

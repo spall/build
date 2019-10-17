@@ -4,9 +4,11 @@
 -- | Build traces that are used for recording information from previuos builds.
 module Build.Trace (
     Trace (..),
+    Trace2(..),
 
     -- * Verifying traces
     VT, recordVT, verifyVT,
+    VT2, recordVT2, verifyVT2,
 
     -- * Constructive traces
     CT, isDirtyCT, recordCT, constructCT,
@@ -32,9 +34,29 @@ data Trace k v r = Trace
     , result  :: r }
     deriving Show
 
+data Trace2 k d v r = Trace2
+    { key2     :: k -- Cmd 
+    , depends2 :: [(d, Hash v)] -- [(FilePath, Hash FileContent)]
+    , result2  :: r } -- Hash ()
+    deriving Show
+
+------------------------------- Verifying traces 2 -----------------------------
+
+newtype VT2 k v d v2 = VT2 [Trace2 k d v2 (Hash v)] deriving (Monoid, Semigroup, Show)
+
+recordVT2 :: k -> Hash v -> [(d, Hash v2)] -> VT2 k v d v2 -> VT2 k v d v2
+recordVT2 key valueHash deps (VT2 ts) = VT2 $ Trace2 key deps valueHash : ts
+
+verifyVT2 :: (Monad m, Eq k, Eq v, Eq v2) => k -> Hash v -> (d -> m (Hash v2)) -> VT2 k v d v2 -> m Bool
+verifyVT2 key valueHash fetchHash (VT2 ts) = anyM match ts
+  where
+    match (Trace2 k deps result)
+      | k /= key || result /= valueHash = return False
+      | otherwise = andM [ (h==) <$> fetchHash d | (d,h) <- deps ]
+    
 ------------------------------- Verifying traces -------------------------------
 
--- | An abstract data type for a set of verifying traces equipped with 'recordVT',
+-- | And abstract data type for a set of verifying traces equipped with 'recordVT',
 -- 'verifyVT' and a 'Monoid' instance.
 newtype VT k v = VT [Trace k v (Hash v)] deriving (Monoid, Semigroup, Show)
 

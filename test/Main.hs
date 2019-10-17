@@ -70,6 +70,27 @@ tasks = spreadsheetTask spreadsheet
 tasksA :: Tasks Applicative Cell Int
 tasksA = spreadsheetTaskA acyclicSpreadsheet
 
+script1 :: Script
+script1 = ["I", "am", "a", "forward", "build", "script."]
+
+inputsS :: i -> Store i Cmd ()
+inputsS i = initialise i $ \cmd -> ()
+
+tasksS :: Tasks (MonadState i) i Cmd ()
+tasksS = scriptTask script1
+
+targetS :: Cmd
+targetS = "script."
+
+testS :: String -> Build MonadState i Cmd () -> i -> IO Bool
+testS name build i = do
+  let store = inputs i
+      result = build tasksS targetS
+      correct = correctBuildS tasks store result
+  case correct of
+    False -> todo
+    True  -> do putStr "correct: [OK]\n" ; return True 
+
 test :: String -> Build Monad i Cell Int -> i -> IO Bool
 test name build i = do
     let store   = inputs i
@@ -104,7 +125,8 @@ testSuite = and <$> sequence
     , test  "bazel     " bazel      mempty
     , test  "cloudShake" cloudShake mempty
     , testA "buck      " buck       mempty
-    , test  "nix       " nix        mempty ]
+    , test  "nix       " nix        mempty
+    , testS "forward   " forward    mempty]
 
 main :: IO ()
 main = do

@@ -1,4 +1,4 @@
-{-# LANGUAGE TupleSections #-}
+{-# LANGUAGE TupleSections, ScopedTypeVariables #-}
 
 -- | Rebuilders take care of deciding whether a key needs to be rebuild and
 -- running the corresponding task if need be.
@@ -94,7 +94,7 @@ approximateRebuilder key value task = Task $ \fetch -> do
         return newValue
 
 ------------------------------- Verifying traces -------------------------------
--- | This rebuilder relies on verifying traces.
+-- | This rebuilder relies on verifying traces.`
 vtRebuilder :: (Eq k, Hashable v) => Rebuilder Monad (VT k v) k v
 vtRebuilder key value task = Task $ \fetch -> do
     upToDate <- verifyVT key (hash value) (fmap hash . fetch) =<< get
@@ -103,7 +103,16 @@ vtRebuilder key value task = Task $ \fetch -> do
     else do
         (newValue, deps) <- track task fetch
         modify $ recordVT key (hash newValue) [ (k, hash v) | (k, v) <- deps ]
-        return newValue
+        return newValue     
+
+svtRebuilder :: forall m k v v2 d.(Monad m, Eq k, Hashable v, Hashable v2) => (d -> m v2) -> Rebuilder (MonadState (VT2 k v d v2)) (VT2 k v d v2) k v
+svtRebuilder fetchDep key value task = Task $ \fetch -> do
+  let b = verifyVT2 key (hash value) (fmap hash . fetchDep) =<< get
+  upToDate <- b
+  if upToDate
+    then return value
+    else do
+    run task fetch
 
 ------------------------------ Constructive traces -----------------------------
 -- | This rebuilder relies on constructive traces.
