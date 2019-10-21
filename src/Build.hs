@@ -1,21 +1,22 @@
 -- | Build systems and the properties they should ensure.
 module Build (
     -- * Build
-    Build,
+    Build, BuildIO, 
 
     -- * Properties
-    correctBuild,
-    correctBuildS
+    correctBuild
     ) where
 
 import Build.Task
 import Build.Task.Monad
 import Build.Store
 import Build.Utilities
+import Control.Monad.IO.Class
 
 -- | A build system takes a description of 'Tasks', a target key, and a store,
 -- and computes a new store, where the key and its dependencies are up to date.
 type Build c i k v = Tasks c k v -> k -> Store i k v -> Store i k v
+type BuildIO c i k v = Tasks c k v -> k -> Store i k v -> IO (Store i k v)
 
 -- | Given a description of @tasks@, an initial @store@, and a @result@ produced
 -- by running a build system on a target @key@, this function returns 'True' if
@@ -32,5 +33,6 @@ correctBuild tasks store result = all correct . reachable deps
         Nothing   -> getValue k result == getValue k store
         Just task -> getValue k result == compute task result
 
-correctBuildS :: (Ord k, Eq v) => Tasks (MonadState i) k v -> Store i k v -> Store i k v -> k -> Bool
-correctBuildS tasks store result = True
+correctBuildIO :: (Ord k, Eq v) => Tasks MonadIO k v -> Store i k v -> Store i k v -> k -> IO bool
+correctBuildIO tasks store result = all correct . reachable deps
+  where deps = 

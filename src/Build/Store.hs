@@ -30,6 +30,9 @@ instance Hashable Int where
 instance Hashable Integer where
     hash = Hash
 
+instance Hashable Char where
+  hash = Hash
+
 instance Hashable a => Hashable [a] where
     hash = Hash
 

@@ -9,7 +9,7 @@ module Build.System (
     make, ninja, cloudBuild, buck,
 
     -- * Monadic build systems
-    excel, shake, cloudShake, bazel, nix, forward
+    excel, shake, cloudShake, bazel, nix, forward, forwardIO
     ) where
 
 import Control.Monad.State
@@ -68,8 +68,11 @@ shake = suspending vtRebuilder
 
 -- | A model of a generic forward build system:
 -- 
-forward :: (Ord k, Hashable v, Ord d, Hashable v2) => (d -> m v2) -> Build (MonadState (VT2 k v d v2)) (VT2 k v d v2) k v
-forward getDep = topological2 (svtRebuilder getDep)
+forward :: (Ord k, Hashable v) => Build Applicative (VT k v) k v
+forward = topological (adaptRebuilder vtRebuilder)
+
+forwardIO :: (Ord k, Hashable v) => BuildIO Monad (VT k v) k v
+forwardIO = suspendingIO vtRebuilderIO
 
 -- | A model of Bazel: a monadic build system that uses constructive traces
 -- to check if a key is up to date as well as for caching build results. Note

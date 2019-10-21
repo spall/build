@@ -4,6 +4,8 @@ import Data.Bool
 import Data.List.Extra
 import Data.Maybe
 import System.Exit
+import Control.Monad.IO.Class
+import qualified Data.Set as Set
 
 import qualified Data.Map as Map
 
@@ -13,6 +15,7 @@ import Build.System
 import Build.Task
 import Build.Task.Free()
 
+import Script
 import Spreadsheet
 import Examples()
 
@@ -72,24 +75,40 @@ tasksA = spreadsheetTaskA acyclicSpreadsheet
 
 script1 :: Script
 script1 = ["I", "am", "a", "forward", "build", "script."]
+cmdInfo1 :: CmdInfo
+cmdInfo1 "I" = Set.singleton "file1.txt"
+cmdInfo1 "am" = Set.singleton "file2.txt"
+cmdInfo1 "a" = Set.singleton "file3.txt"
+cmdInfo1 "forward" = Set.singleton "file4.txt"
+cmdInfo1 "build" = Set.empty
+cmdInfo1 "script" = Set.singleton "file5.txt"
 
-inputsS :: i -> Store i Cmd ()
-inputsS i = initialise i $ \cmd -> ()
+readFile1 :: FilePath -> FileContent
+readFile1 x = "content"
 
-tasksS :: Tasks (MonadState i) i Cmd ()
-tasksS = scriptTask script1
+inputsIO :: i -> Store i Dep Val
+inputsIO i = initialise i $ \k -> case k of
+  Cmd _ -> Ret 0 
+  File x -> Content $ readFile1 x
 
-targetS :: Cmd
-targetS = "script."
+tasksIO :: Tasks MonadIO Dep Val
+tasksIO = scriptTask script1 cmdInfo1
 
-testS :: String -> Build MonadState i Cmd () -> i -> IO Bool
-testS name build i = do
-  let store = inputs i
-      result = build tasksS targetS
-      correct = correctBuildS tasks store result
+targetIO :: Dep
+targetIO = Cmd "script."
+
+targetsIO :: [Dep]
+targetsIO = map Cmd script1
+
+testIO :: String -> BuildIO MonadIO i Dep Val -> i -> IO Bool
+testIO name build i = do
+  let store = inputsIO i
+      result = build tasksIO targetIO store
+      correct = all (correctBuildIO tasksIO store result) targetsIO
+  putStr $ name ++ " is "
   case correct of
-    False -> todo
-    True  -> do putStr "correct: [OK]\n" ; return True 
+    False -> do putStr "incorrect: [FAIL]\n" ; return False
+    True -> do putStr "correct: [OK]\n" ; return True
 
 test :: String -> Build Monad i Cell Int -> i -> IO Bool
 test name build i = do
@@ -126,7 +145,8 @@ testSuite = and <$> sequence
     , test  "cloudShake" cloudShake mempty
     , testA "buck      " buck       mempty
     , test  "nix       " nix        mempty
-    , testS "forward   " forward    mempty]
+    , testIO "forwardIO   " forwardIO    mempty]
+    --, testIO "forwardIO " forward   mempty]
 
 main :: IO ()
 main = do

@@ -1,13 +1,13 @@
-{-# LANGUAGE TupleSections, ScopedTypeVariables #-}
+{-# LANGUAGE TupleSections, ScopedTypeVariables, ConstraintKinds #-}
 
 -- | Rebuilders take care of deciding whether a key needs to be rebuild and
 -- running the corresponding task if need be.
 module Build.Rebuilder (
-    Rebuilder, adaptRebuilder, perpetualRebuilder,
+    Rebuilder, RebuilderIO, adaptRebuilder, perpetualRebuilder,
     modTimeRebuilder, Time, MakeInfo,
     dirtyBitRebuilder, dirtyBitRebuilderWithCleanUp,
     approximateRebuilder, ApproximateDependencies, ApproximationInfo,
-    vtRebuilder, stRebuilder, ctRebuilder, dctRebuilder
+    vtRebuilder, stRebuilder, ctRebuilder, dctRebuilder, vtRebuilderIO
     ) where
 
 import Control.Monad.State
@@ -21,12 +21,14 @@ import Build.Store
 import Build.Task
 import Build.Task.Applicative
 import Build.Task.Monad
+import Build.Task.MonadIO
 import Build.Trace
 
 -- | Given a key-value pair and the corresponding task, a rebuilder returns a
 -- new task that has access to the build information and can use it to skip
 -- rebuilding a key if it is up to date.
 type Rebuilder c i k v = k -> v -> Task c k v -> Task (MonadState i) k v
+type RebuilderIO c i k v = k -> v -> Task c k v -> IO (Task (MonadState i) k v)
 
 -- | Get an applicative rebuilder out of a monadic one.
 adaptRebuilder :: Rebuilder Monad i k v -> Rebuilder Applicative i k v
@@ -94,6 +96,11 @@ approximateRebuilder key value task = Task $ \fetch -> do
         return newValue
 
 ------------------------------- Verifying traces -------------------------------
+
+{- type Rebuilder   c i k v = k -> v -> Task c k v ->     Task (MonadState i) k v
+   type RebuilderIO c i k v = k -> v -> Task c k v -> IO (Task (MonadState i) k v)
+-}
+
 -- | This rebuilder relies on verifying traces.`
 vtRebuilder :: (Eq k, Hashable v) => Rebuilder Monad (VT k v) k v
 vtRebuilder key value task = Task $ \fetch -> do
@@ -103,16 +110,17 @@ vtRebuilder key value task = Task $ \fetch -> do
     else do
         (newValue, deps) <- track task fetch
         modify $ recordVT key (hash newValue) [ (k, hash v) | (k, v) <- deps ]
-        return newValue     
+        return newValue
 
-svtRebuilder :: forall m k v v2 d.(Monad m, Eq k, Hashable v, Hashable v2) => (d -> m v2) -> Rebuilder (MonadState (VT2 k v d v2)) (VT2 k v d v2) k v
-svtRebuilder fetchDep key value task = Task $ \fetch -> do
-  let b = verifyVT2 key (hash value) (fmap hash . fetchDep) =<< get
-  upToDate <- b
-  if upToDate
+vtRebuilderIO :: (Eq k, Hashable v) => RebuilderIO Monad (VT k v) k v
+vtRebuilderIO key value task = return $ Task $ \fetch -> do
+    upToDate <- verifyVT key (hash value) (fmap hash . fetch) =<< get
+    if upToDate
     then return value
     else do
-    run task fetch
+        (newValue, deps) <- track task fetch
+        modify $ recordVT key (hash newValue) [ (k, hash v) | (k, v) <- deps ]
+        return newValue
 
 ------------------------------ Constructive traces -----------------------------
 -- | This rebuilder relies on constructive traces.

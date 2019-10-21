@@ -7,6 +7,7 @@ module Build.Scheduler (
     restarting, Chain,
     restarting2,
     suspending,
+    suspendingIO,
     independent
     ) where
 
@@ -28,6 +29,7 @@ import qualified Data.Set as Set
 -- type Rebuilder c i k v = k -> v -> Task c k v -> Task (MonadState i) k v
 -- type Build c i k v = Tasks c k v -> k -> Store i k v -> Store i k v
 type Scheduler c i j k v = Rebuilder c j k v -> Build c i k v
+type SchedulerIO c i j k v = RebuilderIO c j k v -> BuildIO c i k v
 
 -- | Lift a computation operating on @i@ to @Store i k v@.
 liftStore :: State i a -> State (Store i k v) a
@@ -75,36 +77,6 @@ topological rebuilder tasks target = execState $ mapM_ build order
         Nothing -> error "Cannot build tasks with cyclic dependencies"
         Just xs -> xs
     deps k = case tasks k of { Nothing -> []; Just task -> dependencies task }
-
-topological2 :: forall i k v. Ord k => Scheduler (MonadState i) i i k v
-topological2 rebuilder tasks target = execState $ mapM_ build order
-  where
-    build :: k -> State (Store i k v) ()
-    build key = case tasks key of
-        Nothing -> return ()
-        Just task -> do
-            store <- get
-            let value = getValue key store
-                newTask :: Task (MonadState i) k v
-                newTask = rebuilder key value task
-                fetch :: k -> State i v
-                fetch k = return (getValue k store)
-            newValue <- liftStore (run newTask fetch)
-            modify $ updateValue key value newValue
-    order = case topSort (graph deps target) of
-        Nothing -> error "Cannot build tasks with cyclic dependencies"
-        Just xs -> xs
-    deps k = case tasks k of { Nothing -> []; Just task -> dependencies task }
-
--- topological calls build on each key in the determined order
--- build
--- 1. finds task for the key if there is one
--- 2. gets the store
--- 3. gets the current value from the store
--- 4. uses the rebuilder to make a new task
--- 5. the fetch function just looks the value up from the store.; because we have already run
---    the task.
--- 6. 
 
 ---------------------------------- Restarting ----------------------------------
 -- | Convert a task with a total lookup function @k -> m v@ into a task
@@ -221,18 +193,47 @@ suspending rebuilder tasks target store = fst $ execState (fetch target) (store,
                 return newValue
             _ -> gets (getValue key . fst) -- fetch the existing value
 
+suspendingIO :: forall i k v. Ord k => SchedulerIO Monad i i k v
+suspendingIO rebuilder tasks target store = do
+  st <- execStateT (fetch target) (store, Set.empty)
+  return $ fst st
+  where
+    fetch :: k -> StateT (Store i k v, Set k) IO v
+    fetch key = do
+        done <- gets snd
+        case tasks key of
+            Just task | key `Set.notMember` done -> do
+                value <- gets (getValue key . fst)
+                let newTask = rebuilder key value task
+                newTask <- liftIO $ newTask
+                newValue <- liftRunIO newTask fetch
+                modify $ \(s, d) -> (updateValue key value newValue s, Set.insert key d)
+                return newValue
+            _ -> gets (getValue key . fst) -- fetch the existing value
+
 -- | Run a @Task (MonadState i)@ using a fetch callback operating on a larger
 -- state that contains a @Store i k v@ plus some @extra@ information.
 liftRun :: Task (MonadState i) k v
         -> (k -> State (Store i k v, extra) v) -> State (Store i k v, extra) v
 liftRun t f = unwrap $ run t (Wrap . f)
 
+liftRunIO :: Task (MonadState i) k v
+          -> (k -> StateT (Store i k v, extra) IO v) -> StateT (Store i k v, extra) IO v
+liftRunIO t f = unwrapIO $ run t (WrapIO . f)
+
 newtype Wrap i extra k v a = Wrap { unwrap :: State (Store i k v, extra) a }
     deriving (Functor, Applicative, Monad)
+
+newtype WrapIO i extra k v a = WrapIO { unwrapIO :: StateT (Store i k v, extra) IO a }
+  deriving (Functor, Applicative, Monad)
 
 instance MonadState i (Wrap i extra k v) where
     get   = Wrap $ gets (getInfo . fst)
     put i = Wrap $ modify $ \(store, extra) -> (putInfo i store, extra)
+
+instance MonadState i (WrapIO i extra k v) where
+    get   = WrapIO $ gets (getInfo . fst)
+    put i = WrapIO $ modify $ \(store, extra) -> (putInfo i store, extra)
 
 -- | An incorrect scheduler that builds the target key without respecting its
 -- dependencies. It produces the correct result only if all dependencies of the
