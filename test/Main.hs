@@ -14,23 +14,32 @@ import Build.Store
 import Build.System
 import Build.Task
 import Build.Task.Free()
+import Data.Functor.Identity
 
 import Script
 import Spreadsheet
 import Examples()
 
+allM :: (Monad m) => (a -> m Bool) -> [a] -> m Bool
+allM _ [] = return True
+allM p (x:xs) = do
+  q <- p x
+  if q
+    then allM p xs
+    else return False
+
 -- | A build system that acceptes a list of target keys.
-type MultiBuild c i k v = Tasks c k v -> [k] -> Store i k v -> Store i k v
+type MultiBuild c m i k v = Tasks c k v -> [k] -> Store i k v -> m (Store i k v)
 
-sequentialMultiBuild :: Build Monad i k v -> MultiBuild Monad i k v
+sequentialMultiBuild :: Build Monad Identity i k v -> MultiBuild Monad Identity i k v
 sequentialMultiBuild build task outputs store = case outputs of
-    []     -> store
-    (k:ks) -> sequentialMultiBuild build task ks (build task k store)
+    []     -> return store
+    (k:ks) -> sequentialMultiBuild build task ks $ runIdentity (build task k store)
 
-sequentialMultiBuildA :: Build Applicative i k v -> MultiBuild Applicative i k v
+sequentialMultiBuildA :: Build Applicative Identity i k v -> MultiBuild Applicative Identity i k v
 sequentialMultiBuildA build task outputs store = case outputs of
-    []     -> store
-    (k:ks) -> sequentialMultiBuildA build task ks (build task k store)
+    []     -> return store
+    (k:ks) -> sequentialMultiBuildA build task ks $ runIdentity (build task k store)
 
 inputCells :: [Cell]
 inputCells = [ "A1", "A2", "A3" ]
@@ -81,7 +90,8 @@ cmdInfo1 "am" = Set.singleton "file2.txt"
 cmdInfo1 "a" = Set.singleton "file3.txt"
 cmdInfo1 "forward" = Set.singleton "file4.txt"
 cmdInfo1 "build" = Set.empty
-cmdInfo1 "script" = Set.singleton "file5.txt"
+cmdInfo1 "script." = Set.singleton "file5.txt"
+
 
 readFile1 :: FilePath -> FileContent
 readFile1 x = "content"
@@ -100,20 +110,20 @@ targetIO = Cmd "script."
 targetsIO :: [Dep]
 targetsIO = map Cmd script1
 
-testIO :: String -> BuildIO MonadIO i Dep Val -> i -> IO Bool
+testIO :: String -> Build MonadIO IO i Dep Val -> i -> IO Bool
 testIO name build i = do
   let store = inputsIO i
-      result = build tasksIO targetIO store
-      correct = all (correctBuildIO tasksIO store result) targetsIO
+  result <- build tasksIO targetIO store
+  correct <- allM (correctBuildIO tasksIO store result) targetsIO
   putStr $ name ++ " is "
   case correct of
     False -> do putStr "incorrect: [FAIL]\n" ; return False
     True -> do putStr "correct: [OK]\n" ; return True
 
-test :: String -> Build Monad i Cell Int -> i -> IO Bool
+test :: String -> Build Monad Identity i Cell Int -> i -> IO Bool
 test name build i = do
     let store   = inputs i
-        result  = sequentialMultiBuild build tasks targets store
+        result  = runIdentity $ sequentialMultiBuild build tasks targets store
         correct = all (correctBuild tasks store result) targets
     -- when False $ putStrLn $ "========\n" ++ show (getInfo result) ++ "\n========"
     putStr $ name ++ " is "
@@ -122,10 +132,10 @@ test name build i = do
         (_     , False) -> do putStr "incorrect: [FAIL]\n"       ; return False
         (_     , True ) -> do putStr "correct: [OK]\n"           ; return True
 
-testA :: String -> Build Applicative i Cell Int -> i -> IO Bool
+testA :: String -> Build Applicative Identity i Cell Int -> i -> IO Bool
 testA name build i = do
     let store   = inputs i
-        result  = sequentialMultiBuildA build tasksA targets store
+        result  = runIdentity $ sequentialMultiBuildA build tasksA targets store
         correct = all (correctBuild tasks store result) targets
     -- when False $ putStrLn $ "========\n" ++ show (getInfo result) ++ "\n========"
     putStrLn $ name ++ " is " ++ bool "incorrect: [FAIL]" "correct: [OK]" correct

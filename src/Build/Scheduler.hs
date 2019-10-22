@@ -14,6 +14,7 @@ module Build.Scheduler (
 import Control.Monad.State
 import Control.Monad.Trans.Except
 import Data.Set (Set)
+import Data.Functor.Identity
 
 import Build
 import Build.Task
@@ -26,10 +27,7 @@ import Build.Utilities
 
 import qualified Data.Set as Set
 
--- type Rebuilder c i k v = k -> v -> Task c k v -> Task (MonadState i) k v
--- type Build c i k v = Tasks c k v -> k -> Store i k v -> Store i k v
-type Scheduler c i j k v = Rebuilder c j k v -> Build c i k v
-type SchedulerIO c i j k v = RebuilderIO c j k v -> BuildIO c i k v
+type Scheduler c m i j k v = Rebuilder c j k v -> Build c m i k v
 
 -- | Lift a computation operating on @i@ to @Store i k v@.
 liftStore :: State i a -> State (Store i k v) a
@@ -58,8 +56,8 @@ updateValue key _value newValue = putValue key newValue
 -- | This scheduler constructs the dependency graph of the target key by
 -- extracting all (static) dependencies upfront, and then traversing the graph
 -- in the topological order, rebuilding keys using the supplied rebuilder.
-topological :: forall i k v. Ord k => Scheduler Applicative i i k v
-topological rebuilder tasks target = execState $ mapM_ build order
+topological :: forall i k v. Ord k => Scheduler Applicative Identity i i k v
+topological rebuilder tasks target store = return $ execState (mapM_ build order) store
   where
     build :: k -> State (Store i k v) ()
     build key = case tasks key of
@@ -67,7 +65,7 @@ topological rebuilder tasks target = execState $ mapM_ build order
         Just task -> do
             store <- get
             let value = getValue key store
-                newTask :: Task (MonadState i) k v
+                newTask :: Task (ProductC Applicative (MonadState i)) k v
                 newTask = rebuilder key value task
                 fetch :: k -> State i v
                 fetch k = return (getValue k store)
@@ -84,7 +82,7 @@ topological rebuilder tasks target = execState $ mapM_ build order
 -- essentially lifts the task from the type of values @v@ to @Either e v@,
 -- where the result @Left e@ indicates that the task failed, e.g. because of a
 -- failed dependency lookup, and @Right v@ yeilds the value otherwise.
-try :: Task (MonadState i) k v -> Task (MonadState i) k (Either e v)
+try :: Task (ProductC Monad (MonadState i)) k v -> Task (ProductC Monad (MonadState i)) k (Either e v)
 try task = Task $ \fetch -> runExceptT $ run task (ExceptT . fetch)
 
 -- | The so-called @calculation chain@: the order in which keys were built
@@ -97,11 +95,11 @@ type Chain k = [k]
 -- changed and a new dependency is still dirty, the corresponding build task is
 -- abandoned and the key is moved at the end of the calculation chain, so it can
 -- be restarted when all its dependencies are up to date.
-restarting :: forall ir k v. Ord k => Scheduler Monad (ir, Chain k) ir k v
-restarting rebuilder tasks target = execState $ do
+restarting :: forall ir k v. Ord k => Scheduler Monad Identity (ir, Chain k) ir k v
+restarting rebuilder tasks target store = return $ execState (do
     chain    <- gets (snd . getInfo)
     newChain <- liftInfo $ go Set.empty $ chain ++ [target | target `notElem` chain]
-    modify . mapInfo $ \(ir, _) -> (ir, newChain)
+    modify . mapInfo $ \(ir, _) -> (ir, newChain)) store
   where
     go :: Set k -> Chain k -> State (Store ir k v) (Chain k)
     go _    []       = return []
@@ -110,7 +108,7 @@ restarting rebuilder tasks target = execState $ do
         Just task -> do
             store <- get
             let value = getValue key store
-                newTask :: Task (MonadState ir) k (Either k v)
+                newTask :: Task (ProductC Monad (MonadState ir)) k (Either k v)
                 newTask = try $ rebuilder key value task
                 fetch :: k -> State ir (Either k v)
                 fetch k | k `Set.member` done = return $ Right (getValue k store)
@@ -147,8 +145,8 @@ dequeue ((k, bs):q) = Just (k, bs, q)
 --    case we add the dirty dependency to the queue, listing K as blocked by it.
 -- 2. The build succeeds, in which case we add all keys that were previously
 --    blocked by K to the queue.
-restarting2 :: forall k v. (Hashable v, Eq k) => Scheduler Monad (CT k v) (CT k v) k v
-restarting2 rebuilder tasks target = execState $ go (enqueue target [] mempty)
+restarting2 :: forall k v. (Hashable v, Eq k) => Scheduler Monad Identity (CT k v) (CT k v) k v
+restarting2 rebuilder tasks target store = return $ execState (go (enqueue target [] mempty)) store
   where
     go :: Queue k -> State (Store (CT k v) k v) ()
     go queue = case dequeue queue of
@@ -159,7 +157,7 @@ restarting2 rebuilder tasks target = execState $ go (enqueue target [] mempty)
                 store <- get
                 let value = getValue key store
                     upToDate k = isInput tasks k || not (isDirtyCT k store)
-                    newTask :: Task (MonadState (CT k v)) k (Either k v)
+                    newTask :: Task (ProductC Monad (MonadState (CT k v))) k (Either k v)
                     newTask = try $ rebuilder key value task
                     fetch :: k -> State (CT k v) (Either k v)
                     fetch k | upToDate k = return (Right (getValue k store))
@@ -177,8 +175,8 @@ restarting2 rebuilder tasks target = execState $ go (enqueue target [] mempty)
 -- dependencies is dirty, the task is suspended until the dependency is rebuilt.
 -- It stores the set of keys that have already been built as part of the state
 -- to avoid executing the same task twice.
-suspending :: forall i k v. Ord k => Scheduler Monad i i k v
-suspending rebuilder tasks target store = fst $ execState (fetch target) (store, Set.empty)
+suspending :: forall i k v. Ord k => Scheduler Monad Identity i i k v
+suspending rebuilder tasks target store = return $ fst $ execState (fetch target) (store, Set.empty)
   where
     fetch :: k -> State (Store i k v, Set k) v
     fetch key = do
@@ -186,16 +184,16 @@ suspending rebuilder tasks target store = fst $ execState (fetch target) (store,
         case tasks key of
             Just task | key `Set.notMember` done -> do
                 value <- gets (getValue key . fst)
-                let newTask :: Task (MonadState i) k v
+                let newTask :: Task (ProductC Monad (MonadState i)) k v
                     newTask = rebuilder key value task
                 newValue <- liftRun newTask fetch
                 modify $ \(s, d) -> (updateValue key value newValue s, Set.insert key d)
                 return newValue
             _ -> gets (getValue key . fst) -- fetch the existing value
 
-suspendingIO :: forall i k v. Ord k => SchedulerIO Monad i i k v
+suspendingIO :: forall i k v. Ord k => Scheduler MonadIO IO i i k v
 suspendingIO rebuilder tasks target store = do
-  st <- execStateT (fetch target) (store, Set.empty)
+  st <- liftIO $ execStateT (fetch target) (store, Set.empty)
   return $ fst st
   where
     fetch :: k -> StateT (Store i k v, Set k) IO v
@@ -204,8 +202,8 @@ suspendingIO rebuilder tasks target store = do
         case tasks key of
             Just task | key `Set.notMember` done -> do
                 value <- gets (getValue key . fst)
-                let newTask = rebuilder key value task
-                newTask <- liftIO $ newTask
+                let newTask :: Task (ProductC MonadIO (MonadState i)) k v
+                    newTask = rebuilder key value task
                 newValue <- liftRunIO newTask fetch
                 modify $ \(s, d) -> (updateValue key value newValue s, Set.insert key d)
                 return newValue
@@ -213,12 +211,12 @@ suspendingIO rebuilder tasks target store = do
 
 -- | Run a @Task (MonadState i)@ using a fetch callback operating on a larger
 -- state that contains a @Store i k v@ plus some @extra@ information.
-liftRun :: Task (MonadState i) k v
+liftRun :: Task (ProductC Monad (MonadState i)) k v
         -> (k -> State (Store i k v, extra) v) -> State (Store i k v, extra) v
 liftRun t f = unwrap $ run t (Wrap . f)
 
-liftRunIO :: Task (MonadState i) k v
-          -> (k -> StateT (Store i k v, extra) IO v) -> StateT (Store i k v, extra) IO v
+liftRunIO :: Task (ProductC MonadIO (MonadState i)) k v
+        -> (k -> StateT (Store i k v, extra) IO v) -> StateT (Store i k v, extra) IO v
 liftRunIO t f = unwrapIO $ run t (WrapIO . f)
 
 newtype Wrap i extra k v a = Wrap { unwrap :: State (Store i k v, extra) a }
@@ -235,50 +233,24 @@ instance MonadState i (WrapIO i extra k v) where
     get   = WrapIO $ gets (getInfo . fst)
     put i = WrapIO $ modify $ \(store, extra) -> (putInfo i store, extra)
 
+instance MonadIO (WrapIO i extra k v) where
+  liftIO m = WrapIO $ StateT $ \s -> do
+    a <- m
+    return (a,s)
+
 -- | An incorrect scheduler that builds the target key without respecting its
 -- dependencies. It produces the correct result only if all dependencies of the
 -- target key are up to date.
-independent :: forall i k v. Eq k => Scheduler Monad i i k v
+independent :: forall i k v. Eq k => Scheduler Monad Identity i i k v
 independent rebuilder tasks target store = case tasks target of
-    Nothing -> store
+    Nothing -> return store
     Just task ->
         let value   = getValue target store
             newTask = rebuilder target value task
             fetch :: k -> State i v
             fetch k = return (getValue k store)
             (newValue, newInfo) = runState (run newTask fetch) (getInfo store)
-        in putInfo newInfo $ updateValue target value newValue store
-
----------------------------- sequential ------------------------------------------------
-
-{- -- | A build system takes a description of 'Tasks', a target key, and a store,
--- and computes a new store, where the key and its dependencies are up to date.
-type Build c i k v = Tasks c k v -> k -> Store i k v -> Store i k v
-
-type Scheduler c i j k v = Rebuilder c j k v -> Build c i k v
-
--- | Given a key-value pair and the corresponding task, a rebuilder returns a
--- new task that has access to the build information and can use it to skip
--- rebuilding a key if it is up to date.
-type Rebuilder c i k v = k -> v -> Task c k v -> Task (MonadState i) k v
-
--- | A 'Task' is used to compute a value of type @v@, by finding the necessary
--- dependencies using the provided @fetch :: k -> f v@ callback.
-newtype Task c k v = Task { run :: forall f. c f => (k -> f v) -> f v }
-
--- | 'Tasks' associates a 'Task' with every non-input key. @Nothing@ indicates
--- that the key is an input.
-type Tasks c k v = k -> Maybe (Task c k v)
-
-
-sequential :: forall i k v. Ord k => Scheduler Monad i i k v
-sequential rebuilder tasks target store 
--}
-
--- Tasks c Cmd ? -> Cmd -> Store (Map.HashMap FileName Hash) Cmd ? -> Store
-
--- Rebuilder c ? Cmd ? -> Build c i k v
-
+        in return $ putInfo newInfo $ updateValue target value newValue store
 
 
 

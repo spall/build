@@ -1,13 +1,15 @@
-{-# LANGUAGE TupleSections, ScopedTypeVariables, ConstraintKinds #-}
+{-# LANGUAGE TupleSections, ScopedTypeVariables, ConstraintKinds, KindSignatures #-}
+{-# LANGUAGE FlexibleInstances, MultiParamTypeClasses, UndecidableSuperClasses #-}
 
 -- | Rebuilders take care of deciding whether a key needs to be rebuild and
 -- running the corresponding task if need be.
 module Build.Rebuilder (
-    Rebuilder, RebuilderIO, adaptRebuilder, perpetualRebuilder,
+    Rebuilder, perpetualRebuilder,
     modTimeRebuilder, Time, MakeInfo,
     dirtyBitRebuilder, dirtyBitRebuilderWithCleanUp,
     approximateRebuilder, ApproximateDependencies, ApproximationInfo,
-    vtRebuilder, stRebuilder, ctRebuilder, dctRebuilder, vtRebuilderIO
+    vtRebuilder, stRebuilder, ctRebuilder, dctRebuilder, vtRebuilderIO,
+    vtRebuilderA, ctRebuilderA, dctRebuilderA, ProductC
     ) where
 
 import Control.Monad.State
@@ -27,12 +29,10 @@ import Build.Trace
 -- | Given a key-value pair and the corresponding task, a rebuilder returns a
 -- new task that has access to the build information and can use it to skip
 -- rebuilding a key if it is up to date.
-type Rebuilder c i k v = k -> v -> Task c k v -> Task (MonadState i) k v
-type RebuilderIO c i k v = k -> v -> Task c k v -> IO (Task (MonadState i) k v)
+type Rebuilder c i k v = k -> v -> Task c k v -> Task (ProductC c (MonadState i)) k v
 
--- | Get an applicative rebuilder out of a monadic one.
-adaptRebuilder :: Rebuilder Monad i k v -> Rebuilder Applicative i k v
-adaptRebuilder rebuilder key value task = rebuilder key value $ Task $ run task
+class (c m, c1 m) => ProductC c c1 (m :: * -> *)
+instance (c m, c1 m) => ProductC c c1 m
 
 -- | Always rebuilds the key.
 perpetualRebuilder :: Rebuilder Monad () k v
@@ -97,10 +97,6 @@ approximateRebuilder key value task = Task $ \fetch -> do
 
 ------------------------------- Verifying traces -------------------------------
 
-{- type Rebuilder   c i k v = k -> v -> Task c k v ->     Task (MonadState i) k v
-   type RebuilderIO c i k v = k -> v -> Task c k v -> IO (Task (MonadState i) k v)
--}
-
 -- | This rebuilder relies on verifying traces.`
 vtRebuilder :: (Eq k, Hashable v) => Rebuilder Monad (VT k v) k v
 vtRebuilder key value task = Task $ \fetch -> do
@@ -112,13 +108,23 @@ vtRebuilder key value task = Task $ \fetch -> do
         modify $ recordVT key (hash newValue) [ (k, hash v) | (k, v) <- deps ]
         return newValue
 
-vtRebuilderIO :: (Eq k, Hashable v) => RebuilderIO Monad (VT k v) k v
-vtRebuilderIO key value task = return $ Task $ \fetch -> do
+vtRebuilderIO :: (Eq k, Hashable v) => Rebuilder MonadIO (VT k v) k v
+vtRebuilderIO key value task = Task $ \fetch -> do
     upToDate <- verifyVT key (hash value) (fmap hash . fetch) =<< get
     if upToDate
     then return value
     else do
-        (newValue, deps) <- track task fetch
+        (newValue, deps) <- trackIO task fetch
+        modify $ recordVT key (hash newValue) [ (k, hash v) | (k, v) <- deps ]
+        return newValue
+
+vtRebuilderA :: (Eq k, Hashable v) => Rebuilder Applicative (VT k v) k v
+vtRebuilderA key value task = Task $ \fetch -> do
+    upToDate <- verifyVT key (hash value) (fmap hash . fetch) =<< get
+    if upToDate
+    then return value
+    else do
+        (newValue, deps) <- track (Task (run task)) fetch
         modify $ recordVT key (hash newValue) [ (k, hash v) | (k, v) <- deps ]
         return newValue
 
@@ -136,6 +142,18 @@ ctRebuilder key value task = Task $ \fetch -> do
             modify $ recordCT key newValue [ (k, hash v) | (k, v) <- deps ]
             return newValue
 
+ctRebuilderA :: (Eq k, Hashable v) => Rebuilder Applicative (CT k v) k v
+ctRebuilderA key value task = Task $ \fetch -> do
+    cachedValues <- constructCT key (fmap hash . fetch) =<< get
+    if value `elem` cachedValues
+    then return value -- The current value has been verified, let's keep it
+    else case cachedValues of
+        (cachedValue:_) -> return cachedValue -- Any cached value will do
+        _ -> do -- No cached values, need to run the task
+            (newValue, deps) <- track (Task $ run task) fetch
+            modify $ recordCT key newValue [ (k, hash v) | (k, v) <- deps ]
+            return newValue
+
 --------------------------- Deep constructive traces ---------------------------
 -- | This rebuilder relies on deep constructive traces.
 dctRebuilder :: (Eq k, Hashable v) => Rebuilder Monad (DCT k v) k v
@@ -147,6 +165,18 @@ dctRebuilder key value task = Task $ \fetch -> do
         (cachedValue:_) -> return cachedValue -- Any cached value will do
         _ -> do -- No cached values, need to run the task
             (newValue, deps) <- track task fetch
+            put =<< recordDCT key newValue (map fst deps) (fmap hash . fetch) =<< get
+            return newValue
+
+dctRebuilderA :: (Eq k, Hashable v) => Rebuilder Applicative (DCT k v) k v
+dctRebuilderA key value task = Task $ \fetch -> do
+    cachedValues <- constructDCT key (fmap hash . fetch) =<< get
+    if value `elem` cachedValues
+    then return value -- The current value has been verified, let's keep it
+    else case cachedValues of
+        (cachedValue:_) -> return cachedValue -- Any cached value will do
+        _ -> do -- No cached values, need to run the task
+            (newValue, deps) <- track (Task $ run task) fetch
             put =<< recordDCT key newValue (map fst deps) (fmap hash . fetch) =<< get
             return newValue
 

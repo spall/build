@@ -1,22 +1,25 @@
+{-# LANGUAGE ConstraintKinds, RankNTypes #-}
+
 -- | Build systems and the properties they should ensure.
 module Build (
     -- * Build
-    Build, BuildIO, 
+    Build,
 
     -- * Properties
-    correctBuild
+    correctBuild, correctBuildIO
     ) where
 
 import Build.Task
 import Build.Task.Monad
+import Build.Task.MonadIO
 import Build.Store
 import Build.Utilities
 import Control.Monad.IO.Class
+import Control.Monad 
 
 -- | A build system takes a description of 'Tasks', a target key, and a store,
 -- and computes a new store, where the key and its dependencies are up to date.
-type Build c i k v = Tasks c k v -> k -> Store i k v -> Store i k v
-type BuildIO c i k v = Tasks c k v -> k -> Store i k v -> IO (Store i k v)
+type Build c f i k v = Tasks c k v -> k -> Store i k v -> f (Store i k v)
 
 -- | Given a description of @tasks@, an initial @store@, and a @result@ produced
 -- by running a build system on a target @key@, this function returns 'True' if
@@ -33,6 +36,16 @@ correctBuild tasks store result = all correct . reachable deps
         Nothing   -> getValue k result == getValue k store
         Just task -> getValue k result == compute task result
 
-correctBuildIO :: (Ord k, Eq v) => Tasks MonadIO k v -> Store i k v -> Store i k v -> k -> IO bool
-correctBuildIO tasks store result = all correct . reachable deps
-  where deps = 
+correctBuildIO :: (Ord k, Eq v) => Tasks MonadIO k v -> Store i k v -> Store i k v -> k -> IO Bool
+correctBuildIO tasks store result k = do
+  ls <- reachableIO deps k
+  allM correct ls
+  where
+    deps = maybe (return []) (\task -> do
+                                 p <- trackDepsIO task (return . (flip getValue result))
+                                 return $ snd p) . tasks
+    correct k = case tasks k of
+        Nothing   -> return (getValue k result == getValue k store)
+        Just task -> do
+          v <- computeIO task result
+          return (getValue k result == v)

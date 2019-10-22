@@ -33,6 +33,7 @@ library
                         Build.Task.Free,
                         Build.Task.Functor,
                         Build.Task.Monad,
+                        Build.Task.MonadIO,
                         Build.Task.MonadPlus,
                         Build.Task.Opaque,
                         Build.Task.Typed,
@@ -66,6 +67,7 @@ test-suite test
     main-is:            Main.hs
     other-modules:      Examples
                         Spreadsheet
+                        Script
     build-depends:      build,
                         base         >= 4.7     && < 5,
                         containers   >= 0.6     && < 0.7,
